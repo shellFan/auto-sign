@@ -1,0 +1,34 @@
+# Maven
+target/
+*.jar
+*.war
+*.class
+
+# Node
+node_modules/
+dist/
+.env
+.env.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Storage - 忽略敏感数据
+storage/profiles/*
+storage/cookies/*
+storage/screenshots/*
+storage/logs/*
+!storage/.gitkeep
+
+# Application config (contains sensitive data)
+backend/src/main/resources/application.yml
+
+# Logs
+*.log

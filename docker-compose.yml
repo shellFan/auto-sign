@@ -1,0 +1,65 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: auto-sign-backend
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./storage:/app/storage
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:mysql://YOUR_DB_HOST:3306/qiandao?useUnicode=true&characterEncoding=utf-8&useSSL=false&serverTimezone=Asia/Shanghai
+      - SPRING_DATASOURCE_USERNAME=YOUR_DB_USERNAME
+      - SPRING_DATASOURCE_PASSWORD=YOUR_DB_PASSWORD
+      - SPRING_REDIS_HOST=YOUR_REDIS_HOST
+      - SPRING_REDIS_PORT=6379
+      - SPRING_REDIS_PASSWORD=YOUR_REDIS_PASSWORD
+    depends_on:
+      - playwright-worker
+    networks:
+      - auto-sign-network
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: auto-sign-frontend
+    ports:
+      - "3000:80"
+    networks:
+      - auto-sign-network
+
+  playwright-worker:
+    build:
+      context: ./docker/playwright
+      dockerfile: Dockerfile
+    container_name: auto-sign-playwright
+    ports:
+      - "6080:6080"   # noVNC
+      - "9222:9222"   # Chrome DevTools
+    volumes:
+      - ./storage:/app/storage
+    shm_size: '2gb'
+    networks:
+      - auto-sign-network
+
+  nginx:
+    image: nginx:alpine
+    container_name: auto-sign-nginx
+    ports:
+      - "80:80"
+    volumes:
+      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf
+      - ./frontend/dist:/usr/share/nginx/html
+    depends_on:
+      - backend
+      - frontend
+    networks:
+      - auto-sign-network
+
+networks:
+  auto-sign-network:
+    driver: bridge
