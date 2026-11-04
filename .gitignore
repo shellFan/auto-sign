@@ -32,3 +32,6 @@ backend/src/main/resources/application.yml
 
 # Logs
 *.log
+
+# Maven build artifacts (any variant)
+backend/target*/
