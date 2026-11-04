@@ -1,5 +1,8 @@
 package com.autosign.controller;
 
+import com.autosign.adapter.LoginCheckResult;
+import com.autosign.adapter.TiebaSignInAdapter;
+import com.autosign.adapter.WeiboSignInAdapter;
 import com.autosign.dto.Result;
 import com.autosign.entity.PlatformAccount;
 import com.autosign.service.AccountService;
@@ -20,6 +23,12 @@ public class AccountController {
 
     @Autowired
     private BrowserService browserService;
+
+    @Autowired
+    private TiebaSignInAdapter tiebaSignInAdapter;
+
+    @Autowired
+    private WeiboSignInAdapter weiboSignInAdapter;
 
     @GetMapping("/list")
     public Result<List<PlatformAccount>> list(HttpServletRequest request) {
@@ -71,7 +80,19 @@ public class AccountController {
         if (account == null) {
             return Result.error("账号不存在");
         }
-        // 调用浏览器适配器检查登录状态
+        LoginCheckResult loginResult;
+        if ("weibo".equals(account.getPlatform())) {
+            loginResult = weiboSignInAdapter.checkLogin(account);
+        } else if ("tieba".equals(account.getPlatform())) {
+            loginResult = tiebaSignInAdapter.checkLogin(account);
+        } else {
+            return Result.error("不支持的平台");
+        }
+
+        accountService.updateLoginStatus(id, loginResult.isLoggedIn() ? 1 : 2);
+        if (!loginResult.isLoggedIn()) {
+            return Result.error(loginResult.getMessage());
+        }
         return Result.success();
     }
 

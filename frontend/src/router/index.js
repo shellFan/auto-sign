@@ -40,6 +40,24 @@ const routes = [
         name: 'SignRecord',
         component: () => import('../views/SignRecordList.vue'),
         meta: { title: '签到记录' }
+      },
+      {
+        path: 'article',
+        name: 'Article',
+        component: () => import('../views/ArticleList.vue'),
+        meta: { title: '文章管理' }
+      },
+      {
+        path: 'article/edit/:id?',
+        name: 'ArticleEdit',
+        component: () => import('../views/ArticleEdit.vue'),
+        meta: { title: '编辑文章' }
+      },
+      {
+        path: 'task-control',
+        name: 'TaskControl',
+        component: () => import('../views/TaskControl.vue'),
+        meta: { title: '任务控制' }
       }
     ]
   }

@@ -1,0 +1,52 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: auto-sign
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://YOUR_DB_HOST:3306/qiandao?useUnicode=true&characterEncoding=utf-8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+    username: YOUR_DB_USERNAME
+    password: "YOUR_DB_PASSWORD"
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:schema.sql
+      data-locations: classpath:data.sql
+  redis:
+    host: YOUR_REDIS_HOST
+    port: 6379
+    password: "YOUR_REDIS_PASSWORD"
+    database: 0
+  servlet:
+    multipart:
+      max-file-size: 50MB
+      max-request-size: 50MB
+
+mybatis-plus:
+  mapper-locations: classpath:/mapper/**/*.xml
+  global-config:
+    db-config:
+      id-type: ASSIGN_ID
+      logic-delete-field: deleted
+      logic-delete-value: 1
+      logic-not-delete-value: 0
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+
+jwt:
+  secret: YOUR_JWT_SECRET_KEY_HERE
+  expiration: 86400000
+
+storage:
+  base-path: ./storage
+  profiles-path: ${storage.base-path}/profiles
+  cookies-path: ${storage.base-path}/cookies
+  screenshots-path: ${storage.base-path}/screenshots
+  logs-path: ${storage.base-path}/logs
+
+logging:
+  level:
+    com.autosign: info

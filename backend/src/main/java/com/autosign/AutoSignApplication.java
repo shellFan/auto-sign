@@ -6,7 +6,8 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.scheduling.annotation.EnableScheduling;
 
 @SpringBootApplication
-@MapperScan("com.autosign.mapper")
+@MapperScan(basePackages = {"com.autosign.mapper", "com.autosign.activity"},
+        annotationClass = org.apache.ibatis.annotations.Mapper.class)
 @EnableScheduling
 public class AutoSignApplication {
 

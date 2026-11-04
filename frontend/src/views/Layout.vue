@@ -32,6 +32,14 @@
           <el-icon><Document /></el-icon>
           <span>签到记录</span>
         </el-menu-item>
+        <el-menu-item index="/article">
+          <el-icon><EditPen /></el-icon>
+          <span>文章管理</span>
+        </el-menu-item>
+        <el-menu-item index="/task-control">
+          <el-icon><VideoPlay /></el-icon>
+          <span>任务控制</span>
+        </el-menu-item>
       </el-menu>
     </el-aside>
     <el-container>

@@ -11,6 +11,7 @@
 ## 设计
 
 - 后端通过可配置的 CDP 地址访问 Chromium worker；Compose 环境用服务名寻址，开发环境保留本机地址配置。
+- 后端通过同一串行入口处理 Playwright 浏览器操作，避免定时任务与管理 API 并发操作共享连接。
 - 每个微博账号使用独立浏览器 context，加载该账号 `storage/profiles/{userId}/weibo/{accountId}/state.json` 中的登录态。签到和登录状态检查都使用同一账号 context，任务结束后关闭 context。
 - 手动登录会话也在 Chromium worker 内建立；noVNC 继续提供浏览器交互界面，保存时将 context 的 storage state 写入共享持久卷。CDP 端口只在 Compose 内部网络供后端访问。
 - 保留每日 08:20 的微博签到调度和现有签到 API。服务器时区明确设为 Asia/Shanghai。无需调整平台操作逻辑或增加账号凭据存储。

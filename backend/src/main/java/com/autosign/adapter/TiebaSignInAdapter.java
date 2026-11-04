@@ -34,6 +34,10 @@ public class TiebaSignInAdapter implements SignInAdapter {
 
     @Override
     public LoginCheckResult checkLogin(PlatformAccount account) {
+        return browserService.executeSerialized(() -> checkLoginSerialized(account));
+    }
+
+    private LoginCheckResult checkLoginSerialized(PlatformAccount account) {
         BrowserContext context = null;
         try {
             context = browserService.loadContext(account.getId(), account.getPlatform(), account.getUserId());
@@ -81,6 +85,10 @@ public class TiebaSignInAdapter implements SignInAdapter {
 
     @Override
     public SignInResult signIn(PlatformAccount account) {
+        return browserService.executeSerialized(() -> signInSerialized(account));
+    }
+
+    private SignInResult signInSerialized(PlatformAccount account) {
         BrowserContext context = null;
         try {
             context = browserService.loadContext(account.getId(), account.getPlatform(), account.getUserId());

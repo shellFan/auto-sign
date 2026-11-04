@@ -87,7 +87,7 @@ public class AccountService {
 
     public List<PlatformAccount> listEnabledByPlatform(Long userId, String platform) {
         LambdaQueryWrapper<PlatformAccount> wrapper = new LambdaQueryWrapper<>();
-        wrapper.eq(PlatformAccount::getUserId, userId)
+        wrapper.eq(userId != null, PlatformAccount::getUserId, userId)
                 .eq(PlatformAccount::getPlatform, platform)
                 .eq(PlatformAccount::getEnableStatus, 1)
                 .eq(PlatformAccount::getLoginStatus, 1);

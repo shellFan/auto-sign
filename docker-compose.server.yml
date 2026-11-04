@@ -1,0 +1,120 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:mysql://127.0.0.1:13306/qiandao?useUnicode=true&characterEncoding=utf-8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+      SPRING_DATASOURCE_USERNAME: qiandao
+      SPRING_DATASOURCE_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+      SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: "5"
+      SPRING_REDIS_HOST: 127.0.0.1
+      SPRING_REDIS_PORT: "16379"
+      SPRING_REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+      BROWSER_CDP_URL: http://127.0.0.1:9222
+      BROWSER_VNC_URL: http://localhost:6080/vnc.html?autoconnect=true
+      SERVER_ADDRESS: 172.30.0.1
+      SERVER_PORT: "18080"
+      JAVA_TOOL_OPTIONS: -Xms64m -Xmx256m
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+      TZ: Asia/Shanghai
+    volumes:
+      - ./storage:/app/storage
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      playwright-worker:
+        condition: service_started
+    mem_limit: 384m
+    network_mode: host
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    user: "0:0"
+    security_opt:
+      - seccomp:unconfined
+    ports:
+      - "127.0.0.1:13000:80"
+    depends_on:
+      - backend
+    mem_limit: 96m
+    networks:
+      - auto-sign-network
+
+  playwright-worker:
+    build:
+      context: ./docker/playwright
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    volumes:
+      - ./storage:/app/storage
+    environment:
+      TZ: Asia/Shanghai
+      CDP_BIND_ADDRESS: 127.0.0.1
+    network_mode: host
+    shm_size: 512mb
+    mem_limit: 640m
+
+  mysql:
+    image: mirror.ccs.tencentyun.com/library/mariadb:10.6
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD in .env}
+      MARIADB_DATABASE: qiandao
+      MARIADB_USER: qiandao
+      MARIADB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+      TZ: Asia/Shanghai
+    ports:
+      - "127.0.0.1:13306:3306"
+    command:
+      - --innodb-buffer-pool-size=96M
+      - --max-connections=20
+      - --performance-schema=OFF
+    volumes:
+      - ./data/mysql:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    mem_limit: 320m
+    networks:
+      - auto-sign-network
+
+  redis:
+    image: mirror.ccs.tencentyun.com/library/redis:7-alpine
+    restart: unless-stopped
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
+    ports:
+      - "127.0.0.1:16379:6379"
+    command:
+      - sh
+      - -c
+      - >-
+        printf 'requirepass %s\nappendonly yes\nmaxmemory 48mb\nmaxmemory-policy noeviction\n' "$${REDIS_PASSWORD}" > /tmp/redis.conf
+        && exec redis-server /tmp/redis.conf
+    volumes:
+      - ./data/redis:/data
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=$$REDIS_PASSWORD redis-cli ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    mem_limit: 80m
+    networks:
+      - auto-sign-network
+
+networks:
+  auto-sign-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24

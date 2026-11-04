@@ -98,3 +98,81 @@ CREATE TABLE IF NOT EXISTS sign_record_detail (
   create_time DATETIME DEFAULT CURRENT_TIMESTAMP,
   KEY idx_record_id (record_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='签到明细表';
+
+-- 文章管理表
+CREATE TABLE IF NOT EXISTS article (
+  id BIGINT NOT NULL PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  title VARCHAR(200) NOT NULL COMMENT '文章标题',
+  content TEXT DEFAULT NULL COMMENT '文章内容(HTML)',
+  summary VARCHAR(500) DEFAULT NULL COMMENT '文章摘要',
+  cover_image VARCHAR(500) DEFAULT NULL COMMENT '封面图片URL',
+  status TINYINT DEFAULT 0 COMMENT '0草稿 1已发布 2已推送公众号',
+  wechat_media_id VARCHAR(200) DEFAULT NULL COMMENT '微信公众号素材ID',
+  publish_time DATETIME DEFAULT NULL COMMENT '发布时间',
+  create_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+  update_time DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  KEY idx_user_id (user_id),
+  KEY idx_status (status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='文章管理表';
+
+-- 微博每日活动计划：目标一经生成即保持不变
+CREATE TABLE IF NOT EXISTS daily_activity_plan (
+  id BIGINT NOT NULL PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  account_id BIGINT NOT NULL,
+  topic_id BIGINT NOT NULL,
+  task_date DATE NOT NULL,
+  sign_target INT NOT NULL,
+  post_target INT NOT NULL,
+  reply_target INT NOT NULL,
+  forward_target INT NOT NULL,
+  view_target INT NOT NULL,
+  created_at DATETIME NOT NULL,
+  UNIQUE KEY uk_activity_plan (task_date, account_id, topic_id),
+  KEY idx_activity_plan_user_date (user_id, task_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='微博每日活动计划';
+
+-- 每行代表一次可独立领取和恢复的活动动作
+CREATE TABLE IF NOT EXISTS activity_task (
+  id BIGINT NOT NULL PRIMARY KEY,
+  plan_id BIGINT NOT NULL,
+  user_id BIGINT NOT NULL,
+  account_id BIGINT NOT NULL,
+  topic_id BIGINT NOT NULL,
+  task_date DATE NOT NULL,
+  action_type VARCHAR(20) NOT NULL,
+  action_ordinal INT NOT NULL,
+  due_at DATETIME NOT NULL,
+  status VARCHAR(20) NOT NULL,
+  content TEXT DEFAULT NULL,
+  post_id VARCHAR(100) DEFAULT NULL,
+  attempts INT NOT NULL DEFAULT 0,
+  message VARCHAR(1000) DEFAULT NULL,
+  started_at DATETIME DEFAULT NULL,
+  finished_at DATETIME DEFAULT NULL,
+  UNIQUE KEY uk_activity_action (plan_id, action_type, action_ordinal),
+  KEY idx_activity_due (task_date, status, due_at),
+  KEY idx_activity_user_date (user_id, task_date),
+  KEY idx_activity_target (account_id, topic_id, task_date, action_type, post_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='微博活动动作队列';
+
+-- 超话发帖和评论模板，使用换行分隔候选文案
+CREATE TABLE IF NOT EXISTS activity_templates (
+  topic_id BIGINT NOT NULL PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  post_templates TEXT NOT NULL,
+  reply_templates TEXT NOT NULL,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  KEY idx_activity_template_user (user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='微博超话活动模板';
+
+-- 登录失效或验证时持久暂停整个账号
+CREATE TABLE IF NOT EXISTS activity_account_pause (
+  account_id BIGINT NOT NULL PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  reason VARCHAR(1000) DEFAULT NULL,
+  created_at DATETIME NOT NULL,
+  updated_at DATETIME NOT NULL,
+  KEY idx_activity_pause_user (user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='微博活动账号暂停标记';

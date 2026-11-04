@@ -47,6 +47,10 @@ storage:
   screenshots-path: ${storage.base-path}/screenshots
   logs-path: ${storage.base-path}/logs
 
+browser:
+  cdp-url: ${BROWSER_CDP_URL:http://localhost:9222}
+  vnc-url: ${BROWSER_VNC_URL:http://localhost:6080/vnc.html?autoconnect=true}
+
 logging:
   level:
     com.autosign: info

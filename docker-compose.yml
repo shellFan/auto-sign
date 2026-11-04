@@ -17,6 +17,9 @@ services:
       - SPRING_REDIS_HOST=YOUR_REDIS_HOST
       - SPRING_REDIS_PORT=6379
       - SPRING_REDIS_PASSWORD=YOUR_REDIS_PASSWORD
+      - BROWSER_CDP_URL=http://playwright-worker:9222
+      - BROWSER_VNC_URL=${BROWSER_VNC_URL:-http://localhost:6080/vnc.html?autoconnect=true}
+      - TZ=Asia/Shanghai
     depends_on:
       - playwright-worker
     networks:
@@ -38,10 +41,11 @@ services:
       dockerfile: Dockerfile
     container_name: auto-sign-playwright
     ports:
-      - "6080:6080"   # noVNC
-      - "9222:9222"   # Chrome DevTools
+      - "127.0.0.1:6080:6080"   # noVNC，使用 SSH 隧道或受保护的反向代理访问
     volumes:
       - ./storage:/app/storage
+    environment:
+      - TZ=Asia/Shanghai
     shm_size: '2gb'
     networks:
       - auto-sign-network

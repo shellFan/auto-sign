@@ -148,4 +148,38 @@ public class WeiboTopicController {
         WeiboPostResult result = weiboSignInAdapter.replyToRandomPost(account, topic, content);
         return Result.success(result);
     }
+
+    @PostMapping("/{id}/forward")
+    public Result<WeiboPostResult> forward(@PathVariable Long id) {
+        WeiboSuperTopic topic = topicService.getById(id);
+        if (topic == null) {
+            return Result.error("超话不存在");
+        }
+        PlatformAccount account = accountService.getById(topic.getAccountId());
+        if (account == null) {
+            return Result.error("账号不存在");
+        }
+        if (account.getLoginStatus() != 1) {
+            return Result.error("账号未登录，请先登录");
+        }
+        WeiboPostResult result = weiboSignInAdapter.forwardPost(account, topic);
+        return Result.success(result);
+    }
+
+    @PostMapping("/{id}/view")
+    public Result<WeiboPostResult> view(@PathVariable Long id, @RequestParam(defaultValue = "10") int count) {
+        WeiboSuperTopic topic = topicService.getById(id);
+        if (topic == null) {
+            return Result.error("超话不存在");
+        }
+        PlatformAccount account = accountService.getById(topic.getAccountId());
+        if (account == null) {
+            return Result.error("账号不存在");
+        }
+        if (account.getLoginStatus() != 1) {
+            return Result.error("账号未登录，请先登录");
+        }
+        WeiboPostResult result = weiboSignInAdapter.viewPosts(account, topic, count);
+        return Result.success(result);
+    }
 }

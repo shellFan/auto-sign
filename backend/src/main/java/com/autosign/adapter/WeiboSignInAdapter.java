@@ -9,14 +9,15 @@ import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.options.LoadState;
+import com.microsoft.playwright.options.WaitUntilState;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
+import java.util.*;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
-import java.util.*;
 
 @Component
 public class WeiboSignInAdapter {
@@ -32,379 +33,151 @@ public class WeiboSignInAdapter {
     private final Random random = new Random();
 
     private Browser connectToUserChrome() {
+        return browserService.connectToUserChrome();
+    }
+
+    private void waitRandom(int minMs, int maxMs) {
         try {
-            return browserService.getPlaywright().chromium().connectOverCDP("http://localhost:9222");
-        } catch (Exception e) {
-            log.warn("无法连接到用户 Chrome: {}", e.getMessage());
-            return null;
+            Thread.sleep(minMs + random.nextInt(maxMs - minMs));
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
     }
 
     public SignInResult signTopic(PlatformAccount account, WeiboSuperTopic topic) {
+        return browserService.executeSerialized(() -> signTopicSerialized(account, topic));
+    }
+
+    private SignInResult signTopicSerialized(PlatformAccount account, WeiboSuperTopic topic) {
+        BrowserContext context = null;
+        Page page = null;
         try {
-            log.info("========== 开始签到超话 ==========");
+            log.info("========== sign topic ==========");
             log.info("topicId={}, topicName={}", topic.getId(), topic.getTopicName());
 
-            Browser userBrowser = connectToUserChrome();
-            if (userBrowser == null) {
-                return SignInResult.failed("无法连接到浏览器");
+            context = browserService.loadWeiboContext(account);
+            if (context == null) {
+                return SignInResult.failed("Cannot connect to browser");
             }
 
-            try {
-                List<BrowserContext> contexts = userBrowser.contexts();
-                if (contexts.isEmpty()) {
-                    return SignInResult.failed("浏览器没有打开的页面");
-                }
+            page = context.newPage();
+            String url = topic.getTopicUrl();
+            log.info("open topic page: url={}", url);
+            page.navigate(url, new Page.NavigateOptions().setTimeout(60000));
+            page.waitForLoadState(LoadState.DOMCONTENTLOADED);
+            page.waitForTimeout(5000);
 
-                BrowserContext context = contexts.get(0);
-                Page page = context.newPage();
+            String content = page.content();
+            log.info("page title: {}", page.title());
 
-                String url = topic.getTopicUrl();
-                log.info("打开超话页面: url={}", url);
-                page.navigate(url, new Page.NavigateOptions().setTimeout(60000));
-                page.waitForLoadState(LoadState.DOMCONTENTLOADED);
-                page.waitForTimeout(3000);
-
-                String content = page.content();
-                log.info("页面标题: {}", page.title());
-
-                if (content.contains("Sina Visitor System") || content.contains("微博登录")) {
-                    log.warn("需要登录微博");
-                    page.close();
-                    return SignInResult.needRelogin();
-                }
-
-                log.info("检查是否已签到...");
-                if (content.contains("已签到") || content.contains("已打卡") || content.contains("连续签到")) {
-                    log.info("已签到");
-                    page.close();
-                    return SignInResult.builder().status(2).successCount(1).failCount(0).message("已签到").build();
-                }
-
-                log.info("查找签到按钮...");
-                Locator signBtn = findSignButton(page);
-
-                if (signBtn == null) {
-                    log.warn("未找到签到按钮");
-                    page.close();
-                    return SignInResult.failed("未找到签到按钮");
-                }
-
-                log.info("点击签到按钮...");
-                signBtn.scrollIntoViewIfNeeded();
-                page.waitForTimeout(500);
-                signBtn.click();
-
-                log.info("等待页面更新...");
-                page.waitForTimeout(5000);
-
-                log.info("重新加载页面...");
-                page.reload();
-                page.waitForLoadState(LoadState.DOMCONTENTLOADED);
-                page.waitForTimeout(3000);
-
-                String newContent = page.content();
-                log.info("检查签到结果...");
-
-                if (newContent.contains("已签到") || newContent.contains("已打卡") || 
-                    newContent.contains("连续签到") || newContent.contains("签到天数")) {
-                    log.info("签到成功");
-                    page.close();
-                    return SignInResult.success(1);
-                }
-
-                log.warn("签到后未检测到成功状态");
-                page.close();
-                return SignInResult.failed("签到后未检测到成功状态");
-            } catch (Exception e) {
-                log.error("签到执行失败", e);
-                return SignInResult.failed("签到失败: " + e.getMessage());
+            if (requiresWeiboLogin(page, content)) {
+                log.warn("need login");
+                return SignInResult.needRelogin();
             }
+
+            if (content.contains("\u5df2\u7b7e\u5230") || content.contains("\u5df2\u6253\u5361") || content.contains("\u8fde\u7eed\u7b7e\u5230")) {
+                log.info("already signed");
+                return SignInResult.builder().status(2).successCount(1).failCount(0).message("Already signed").build();
+            }
+
+            log.info("find sign button...");
+            Locator signBtn = findSignButton(page);
+            if (signBtn == null) {
+                log.warn("sign button not found");
+                return SignInResult.failed("Sign button not found");
+            }
+
+            signBtn.scrollIntoViewIfNeeded();
+            page.waitForTimeout(500);
+            signBtn.click();
+            page.waitForTimeout(8000);
+
+            String afterClickContent = page.content();
+            if (containsSignedText(afterClickContent)) {
+                log.info("sign success");
+                return SignInResult.success(1);
+            }
+
+            page.reload(new Page.ReloadOptions()
+                    .setWaitUntil(WaitUntilState.DOMCONTENTLOADED)
+                    .setTimeout(60000));
+            page.waitForTimeout(5000);
+            String afterReloadContent = page.content();
+            if (containsSignedText(afterReloadContent)) {
+                log.info("sign success after reload");
+                return SignInResult.success(1);
+            }
+
+            log.warn("sign button clicked but cannot confirm result; button text after reload={}",
+                    findSignButtonText(page));
+            return SignInResult.failed("Sign was clicked but Weibo did not confirm it");
         } catch (Exception e) {
-            log.error("微博超话签到失败", e);
-            return SignInResult.failed("签到失败: " + e.getMessage());
+            log.error("topic sign failed", e);
+            return SignInResult.failed("Sign failed: " + e.getMessage());
+        } finally {
+            if (page != null) {
+                try { page.close(); } catch (Exception e) { log.debug("close sign page failed", e); }
+            }
+            if (context != null) {
+                try { context.close(); } catch (Exception e) { log.debug("close sign context failed", e); }
+            }
+        }
+    }
+
+    private boolean containsSignedText(String content) {
+        return content.contains("\u5df2\u7b7e\u5230") || content.contains("\u5df2\u6253\u5361") ||
+                content.contains("\u8fde\u7eed\u7b7e\u5230") || content.contains("\u7b7e\u5230\u5929\u6570") ||
+                content.contains("\u7b7e\u5230\u6210\u529f");
+    }
+
+    private boolean requiresWeiboLogin(Page page, String content) {
+        if (content.contains("Sina Visitor System") || content.contains("\u5fae\u535a\u767b\u5f55")) {
+            return true;
+        }
+        try {
+            String visibleText = page.locator("body").innerText().trim();
+            return visibleText.isEmpty() || visibleText.startsWith("\u767b\u5f55\n\u6ce8\u518c") ||
+                    visibleText.startsWith("\u767b\u5f55\r\n\u6ce8\u518c");
+        } catch (Exception e) {
+            return true;
         }
     }
 
     private Locator findSignButton(Page page) {
-        List<Locator> allButtons = page.locator("button, [role='button'], a[class*='btn']").all();
-        for (Locator btn : allButtons) {
+        List<Locator> candidates = page.locator(
+                "button, [role='button'], a[class*='btn'], div[class*='signBtnOverlay']").all();
+        for (Locator candidate : candidates) {
             try {
-                String text = btn.innerText().trim();
-                if (text.equals("签到") || text.equals("打卡")) {
-                    return btn;
+                String text = candidate.innerText().trim();
+                if (("\u7b7e\u5230".equals(text) || "\u6253\u5361".equals(text)) &&
+                        candidate.isVisible() && candidate.isEnabled()) {
+                    return candidate;
                 }
-            } catch (Exception e) {
-                // 忽略
+            } catch (Exception ignored) {
+                // Ignore detached or non-interactive candidates.
             }
         }
         return null;
     }
 
-    /**
-     * 在超话发帖 - 使用用户已打开的浏览器
-     */
-    public WeiboPostResult postInTopic(PlatformAccount account, WeiboSuperTopic topic, String content) {
+    private String findSignButtonText(Page page) {
+        Locator signButton = findSignButton(page);
+        if (signButton == null) return "<not found>";
         try {
-            log.info("========== 开始发帖 ==========");
-            log.info("topicId={}, topicName={}, content={}", topic.getId(), topic.getTopicName(), content);
-
-            Browser userBrowser = connectToUserChrome();
-            if (userBrowser == null) {
-                return WeiboPostResult.failed("无法连接到浏览器");
-            }
-
-            try {
-                List<BrowserContext> contexts = userBrowser.contexts();
-                if (contexts.isEmpty()) {
-                    return WeiboPostResult.failed("浏览器没有打开的页面");
-                }
-
-                // 使用第一个上下文
-                BrowserContext context = contexts.get(0);
-
-                // 查找用户已打开的超话页面
-                Page targetPage = null;
-                for (Page p : context.pages()) {
-                    if (p.url().contains("weibo.com/p/") || p.url().contains("weibo.com/home")) {
-                        targetPage = p;
-                        break;
-                    }
-                }
-
-                if (targetPage == null) {
-                    // 如果没有找到已打开的页面，创建新页面
-                    targetPage = context.newPage();
-                    String url = topic.getTopicUrl();
-                    log.info("打开超话页面: url={}", url);
-                    targetPage.navigate(url, new Page.NavigateOptions().setTimeout(60000));
-                    targetPage.waitForLoadState(LoadState.DOMCONTENTLOADED);
-                    targetPage.waitForTimeout(5000);
-                }
-
-                log.info("使用页面: url={}", targetPage.url());
-
-                // 等待页面加载完成
-                targetPage.waitForTimeout(2000);
-
-                // 查找并点击"发帖"按钮
-                log.info("查找发帖按钮...");
-                Locator postBtn = null;
-
-                // 遍历所有按钮和可点击元素
-                List<Locator> allElements = targetPage.locator("button, [role='button'], a, span, div").all();
-                for (Locator elem : allElements) {
-                    try {
-                        String text = elem.innerText().trim();
-                        if (text.equals("发帖") || text.equals("发微博") || text.equals("写微博")) {
-                            postBtn = elem;
-                            log.info("找到发帖按钮: text={}", text);
-                            break;
-                        }
-                    } catch (Exception e) {
-                        // 忽略
-                    }
-                }
-
-                if (postBtn == null || postBtn.count() == 0) {
-                    log.warn("未找到发帖按钮");
-                    return WeiboPostResult.failed("未找到发帖按钮");
-                }
-
-                // 点击发帖按钮
-                log.info("点击发帖按钮...");
-                postBtn.click();
-                targetPage.waitForTimeout(5000);
-
-                // 查找输入框
-                log.info("查找输入框...");
-                Locator postInput = null;
-
-                String[] selectors = {
-                    "textarea",
-                    "[contenteditable='true']",
-                    "[placeholder*='说点什么']",
-                    "[placeholder*='分享']"
-                };
-
-                for (String selector : selectors) {
-                    postInput = targetPage.locator(selector).first();
-                    if (postInput.count() > 0) {
-                        log.info("找到输入框: selector={}", selector);
-                        break;
-                    }
-                }
-
-                if (postInput == null || postInput.count() == 0) {
-                    log.warn("未找到发帖输入框");
-                    return WeiboPostResult.failed("未找到发帖输入框");
-                }
-
-                // 输入内容
-                log.info("输入发帖内容...");
-                postInput.click();
-                targetPage.waitForTimeout(500);
-                postInput.fill(content);
-                targetPage.waitForTimeout(1000);
-
-                // 查找发布按钮
-                log.info("查找发布按钮...");
-                Locator submitBtn = findSubmitButton(targetPage);
-
-                if (submitBtn == null) {
-                    log.warn("未找到发布按钮");
-                    return WeiboPostResult.failed("未找到发布按钮");
-                }
-
-                // 点击发布
-                log.info("点击发布...");
-                submitBtn.click();
-                targetPage.waitForTimeout(5000);
-
-                log.info("发帖完成");
-                return WeiboPostResult.success();
-            } catch (Exception e) {
-                log.error("发帖执行失败", e);
-                return WeiboPostResult.failed("发帖失败: " + e.getMessage());
-            }
+            return signButton.innerText().trim();
         } catch (Exception e) {
-            log.error("微博发帖失败", e);
-            return WeiboPostResult.failed("发帖失败: " + e.getMessage());
-        }
-    }
-
-    private Locator findSubmitButton(Page page) {
-        List<Locator> allBtns = page.locator("button, [role='button']").all();
-        for (Locator btn : allBtns) {
-            try {
-                String text = btn.innerText().trim();
-                if (text.contains("发布") || text.contains("发送") || text.contains("发帖")) {
-                    return btn;
-                }
-            } catch (Exception e) {
-                // 忽略
-            }
-        }
-        return null;
-    }
-
-    /**
-     * 随机回复超话下的帖子
-     */
-    public WeiboPostResult replyToRandomPost(PlatformAccount account, WeiboSuperTopic topic, String replyContent) {
-        try {
-            log.info("========== 开始回复帖子 ==========");
-            log.info("topicId={}, topicName={}, replyContent={}", topic.getId(), topic.getTopicName(), replyContent);
-
-            Browser userBrowser = connectToUserChrome();
-            if (userBrowser == null) {
-                return WeiboPostResult.failed("无法连接到浏览器");
-            }
-
-            try {
-                List<BrowserContext> contexts = userBrowser.contexts();
-                if (contexts.isEmpty()) {
-                    return WeiboPostResult.failed("浏览器没有打开的页面");
-                }
-
-                BrowserContext context = contexts.get(0);
-                Page page = context.newPage();
-
-                String url = topic.getTopicUrl();
-                log.info("打开超话页面: url={}", url);
-                page.navigate(url, new Page.NavigateOptions().setTimeout(60000));
-                page.waitForLoadState(LoadState.DOMCONTENTLOADED);
-                page.waitForTimeout(5000);
-
-                String pageContent = page.content();
-
-                if (pageContent.contains("Sina Visitor System") || pageContent.contains("微博登录")) {
-                    log.warn("需要登录微博");
-                    page.close();
-                    return WeiboPostResult.failed("需要重新登录");
-                }
-
-                // 查找评论按钮
-                log.info("查找评论按钮...");
-                Locator commentBtn = null;
-
-                List<Locator> allButtons = page.locator("button, [role='button'], a[class*='btn'], span[class*='btn']").all();
-                for (Locator btn : allButtons) {
-                    try {
-                        String text = btn.innerText().trim();
-                        if (text.contains("评论") || text.contains("回复")) {
-                            commentBtn = btn;
-                            log.info("找到评论按钮: text={}", text);
-                            break;
-                        }
-                    } catch (Exception e) {
-                        // 忽略
-                    }
-                }
-
-                if (commentBtn == null) {
-                    log.warn("未找到评论按钮");
-                    page.close();
-                    return WeiboPostResult.failed("未找到评论按钮");
-                }
-
-                // 点击评论按钮
-                log.info("点击评论按钮...");
-                commentBtn.click();
-                page.waitForTimeout(2000);
-
-                // 查找评论输入框
-                log.info("查找评论输入框...");
-                Locator replyInput = page.locator("textarea").first();
-                if (replyInput.count() == 0) {
-                    replyInput = page.locator("[contenteditable='true']").first();
-                }
-
-                if (replyInput.count() == 0) {
-                    log.warn("未找到评论输入框");
-                    page.close();
-                    return WeiboPostResult.failed("未找到评论输入框");
-                }
-
-                // 输入回复内容
-                log.info("输入回复内容...");
-                replyInput.click();
-                page.waitForTimeout(500);
-                replyInput.fill(replyContent);
-                page.waitForTimeout(1000);
-
-                // 查找发送按钮
-                log.info("查找发送按钮...");
-                Locator sendBtn = findSubmitButton(page);
-
-                if (sendBtn == null) {
-                    log.warn("未找到发送按钮");
-                    page.close();
-                    return WeiboPostResult.failed("未找到发送按钮");
-                }
-
-                // 点击发送
-                log.info("点击发送...");
-                sendBtn.click();
-                page.waitForTimeout(5000);
-
-                log.info("回复完成");
-                page.close();
-                return WeiboPostResult.success();
-            } catch (Exception e) {
-                log.error("回复执行失败", e);
-                return WeiboPostResult.failed("回复失败: " + e.getMessage());
-            }
-        } catch (Exception e) {
-            log.error("微博回复帖子失败", e);
-            return WeiboPostResult.failed("回复失败: " + e.getMessage());
+            return "<unavailable>";
         }
     }
 
     public SignInResult signAllTopics(PlatformAccount account) {
+        return browserService.executeSerialized(() -> signAllTopicsSerialized(account));
+    }
+
+    private SignInResult signAllTopicsSerialized(PlatformAccount account) {
         List<WeiboSuperTopic> topics = topicService.listByAccountId(account.getId());
         if (topics.isEmpty()) {
-            return SignInResult.failed("没有配置超话");
+            return SignInResult.failed("No topics configured");
         }
 
         int successCount = 0;
@@ -415,7 +188,7 @@ public class WeiboSignInAdapter {
             if (topic.getLastSignDate() != null &&
                     topic.getLastSignDate().equals(LocalDate.now().format(DateTimeFormatter.ISO_LOCAL_DATE))) {
                 details.add(SignInResult.TargetResult.builder()
-                        .targetName(topic.getTopicName()).status(2).message("今日已签到").build());
+                        .targetName(topic.getTopicName()).status(2).message("Already signed today").build());
                 successCount++;
                 continue;
             }
@@ -432,52 +205,514 @@ public class WeiboSignInAdapter {
             details.add(SignInResult.TargetResult.builder()
                     .targetName(topic.getTopicName()).status(result.getStatus()).message(result.getMessage()).build());
 
-            try {
-                Thread.sleep(3000 + random.nextInt(5000));
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                break;
-            }
+            waitRandom(3000, 8000);
         }
 
         if (failCount > 0 && successCount > 0) {
-            return SignInResult.builder().status(3).successCount(successCount).failCount(failCount).message("部分成功").details(details).build();
+            return SignInResult.builder().status(3).successCount(successCount).failCount(failCount).message("Partial success").details(details).build();
         } else if (failCount > 0) {
-            return SignInResult.builder().status(4).successCount(0).failCount(failCount).message("签到失败").details(details).build();
+            return SignInResult.builder().status(4).successCount(0).failCount(failCount).message("Sign failed").details(details).build();
         }
-        return SignInResult.builder().status(2).successCount(successCount).failCount(0).message("全部成功").details(details).build();
+        return SignInResult.builder().status(2).successCount(successCount).failCount(0).message("All success").details(details).build();
+    }
+
+    public WeiboPostResult postInTopic(PlatformAccount account, WeiboSuperTopic topic, String content) {
+        return browserService.executeSerialized(() -> postInTopicSerialized(account, topic, content));
+    }
+
+    private WeiboPostResult postInTopicSerialized(PlatformAccount account, WeiboSuperTopic topic, String content) {
+        try {
+            // Add topic tag to content
+            String topicTag = "#" + topic.getTopicName() + "#";
+            String fullContent = content + " " + topicTag;
+            
+            log.info("========== post in topic ==========");
+            log.info("topicId={}, topicName={}, content={}", topic.getId(), topic.getTopicName(), fullContent);
+
+            Browser userBrowser = connectToUserChrome();
+            if (userBrowser == null) {
+                return WeiboPostResult.failed("Cannot connect to browser");
+            }
+
+            try {
+                List<BrowserContext> contexts = userBrowser.contexts();
+                if (contexts.isEmpty()) {
+                    return WeiboPostResult.failed("No browser pages open");
+                }
+
+                BrowserContext context = contexts.get(0);
+                Page page = context.newPage();
+
+                String url = topic.getTopicUrl();
+                log.info("open topic page: url={}", url);
+                page.navigate(url, new Page.NavigateOptions().setTimeout(60000));
+                page.waitForLoadState(LoadState.DOMCONTENTLOADED);
+                page.waitForTimeout(5000);
+
+                String pageContent = page.content();
+                log.info("page title: {}", page.title());
+
+                if (pageContent.contains("Sina Visitor System") || pageContent.contains("\u5fae\u535a\u767b\u5f55")) {
+                    log.warn("need login");
+                    page.close();
+                    return WeiboPostResult.failed("Need login");
+                }
+
+                // Find and click post button
+                log.info("find post button...");
+                Locator postBtn = page.getByText("\u53d1\u5e16", new Page.GetByTextOptions().setExact(true)).first();
+
+                if (postBtn.count() == 0) {
+                    log.warn("post button not found");
+                    page.close();
+                    return WeiboPostResult.failed("Post button not found");
+                }
+
+                log.info("click post button...");
+                postBtn.evaluate("el => el.click()");
+                page.waitForTimeout(3000);
+
+                // Find input field
+                log.info("find input field...");
+                Locator postInput = page.locator("textarea, [contenteditable='true']").first();
+
+                if (postInput.count() == 0) {
+                    log.warn("input field not found");
+                    page.close();
+                    return WeiboPostResult.failed("Input field not found");
+                }
+
+                // Input content
+                log.info("input post content...");
+                postInput.click();
+                page.waitForTimeout(500);
+                postInput.fill(fullContent);
+                page.waitForTimeout(1000);
+
+                // Find submit button
+                log.info("find submit button...");
+                Locator submitBtn = null;
+                String[] submitTexts = {"\u53d1\u5e03", "\u53d1\u9001", "\u63d0\u4ea4", "\u53d1\u5e16"};
+                for (String text : submitTexts) {
+                    Locator btn = page.getByText(text, new Page.GetByTextOptions().setExact(true)).first();
+                    if (btn.count() > 0) {
+                        submitBtn = btn;
+                        log.info("found submit button: text={}", text);
+                        break;
+                    }
+                }
+
+                if (submitBtn == null || submitBtn.count() == 0) {
+                    log.warn("submit button not found, try Enter key...");
+                    page.keyboard().press("Enter");
+                    page.waitForTimeout(3000);
+                    log.info("post completed (Enter key)");
+                    page.close();
+                    return WeiboPostResult.success();
+                }
+
+                // Click submit
+                log.info("click submit...");
+                submitBtn.evaluate("el => el.click()");
+                page.waitForTimeout(5000);
+
+                log.info("post completed");
+                page.close();
+                return WeiboPostResult.success();
+            } catch (Exception e) {
+                log.error("post execution failed", e);
+                return WeiboPostResult.failed("Post failed: " + e.getMessage());
+            }
+        } catch (Exception e) {
+            log.error("topic post failed", e);
+            return WeiboPostResult.failed("Post failed: " + e.getMessage());
+        }
+    }
+
+    public WeiboPostResult replyToRandomPost(PlatformAccount account, WeiboSuperTopic topic, String replyContent) {
+        return browserService.executeSerialized(() -> replyToRandomPostSerialized(account, topic, replyContent));
+    }
+
+    private WeiboPostResult replyToRandomPostSerialized(PlatformAccount account, WeiboSuperTopic topic, String replyContent) {
+        try {
+            log.info("========== reply to post ==========");
+            log.info("topicId={}, topicName={}, replyContent={}", topic.getId(), topic.getTopicName(), replyContent);
+
+            Browser userBrowser = connectToUserChrome();
+            if (userBrowser == null) {
+                return WeiboPostResult.failed("Cannot connect to browser");
+            }
+
+            try {
+                List<BrowserContext> contexts = userBrowser.contexts();
+                if (contexts.isEmpty()) {
+                    return WeiboPostResult.failed("No browser pages open");
+                }
+
+                BrowserContext context = contexts.get(0);
+                Page page = context.newPage();
+
+                String url = topic.getTopicUrl();
+                log.info("open topic page: url={}", url);
+                page.navigate(url, new Page.NavigateOptions().setTimeout(60000));
+                page.waitForLoadState(LoadState.DOMCONTENTLOADED);
+                page.waitForTimeout(8000);
+
+                String pageContent = page.content();
+                log.info("page title: {}", page.title());
+
+                if (pageContent.contains("Sina Visitor System") || pageContent.contains("\u5fae\u535a\u767b\u5f55")) {
+                    log.warn("need login");
+                    page.close();
+                    return WeiboPostResult.failed("Need login");
+                }
+
+                // Click comment icon using dispatchEvent
+                log.info("click comment icon...");
+                Locator commentIcon = page.locator("i._commentIcon_198pe_122, i[class*='woo-font--comment']").first();
+                if (commentIcon.count() > 0) {
+                    log.info("found comment icon, use dispatchEvent...");
+                    page.evaluate("() => {" +
+                        "  const icon = document.querySelector('i._commentIcon_198pe_122, i[class*=\"woo-font--comment\"]');" +
+                        "  if (icon) {" +
+                        "    const rect = icon.getBoundingClientRect();" +
+                        "    const x = rect.left + rect.width / 2;" +
+                        "    const y = rect.top + rect.height / 2;" +
+                        "    icon.dispatchEvent(new MouseEvent('mousedown', {bubbles: true, cancelable: true, clientX: x, clientY: y}));" +
+                        "    icon.dispatchEvent(new MouseEvent('mouseup', {bubbles: true, cancelable: true, clientX: x, clientY: y}));" +
+                        "    icon.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true, clientX: x, clientY: y}));" +
+                        "  }" +
+                        "}");
+                    page.waitForTimeout(5000);
+                    log.info("dispatchEvent done");
+                } else {
+                    log.warn("comment icon not found");
+                }
+
+                // Find comment input
+                log.info("find comment input...");
+                Locator replyInput = page.locator("textarea, [contenteditable='true']").first();
+
+                if (replyInput.count() == 0) {
+                    log.info("comment input not found, try click again...");
+                    page.evaluate("() -> {" +
+                        "  const items = document.querySelectorAll('[class*=\"_item_\"]');" +
+                        "  for (const item of items) {" +
+                        "    const icon = item.querySelector('i[class*=\"comment\"]');" +
+                        "    if (icon) {" +
+                        "      item.click();" +
+                        "      return 'clicked item with comment icon';" +
+                        "    }" +
+                        "  }" +
+                        "  return 'no item found';" +
+                        "}");
+                    page.waitForTimeout(5000);
+                    replyInput = page.locator("textarea, [contenteditable='true']").first();
+                }
+
+                if (replyInput.count() == 0) {
+                    log.warn("comment input not found");
+                    page.close();
+                    return WeiboPostResult.failed("Comment input not found");
+                }
+
+                // Input reply content
+                log.info("input reply content...");
+                replyInput.click();
+                page.waitForTimeout(500);
+                replyInput.fill(replyContent);
+                page.waitForTimeout(1000);
+
+                // Find send button
+                log.info("find send button...");
+                Locator sendBtn = null;
+                String[] sendTexts = {"\u53d1\u9001", "\u53d1\u5e03", "\u56de\u590d", "\u63d0\u4ea4", "\u8bc4\u8bba"};
+                for (String text : sendTexts) {
+                    Locator btn = page.getByText(text, new Page.GetByTextOptions().setExact(true)).first();
+                    if (btn.count() > 0) {
+                        sendBtn = btn;
+                        log.info("found send button: text={}", text);
+                        break;
+                    }
+                }
+
+                if (sendBtn == null || sendBtn.count() == 0) {
+                    sendBtn = page.locator("button[type='submit'], [class*='submit'], [class*='send']").first();
+                    if (sendBtn.count() > 0) {
+                        log.info("found submit button");
+                    }
+                }
+
+                if (sendBtn == null || sendBtn.count() == 0) {
+                    log.warn("send button not found, try Enter key...");
+                    page.keyboard().press("Enter");
+                    page.waitForTimeout(3000);
+                    try {
+                        String inputText = replyInput.inputValue();
+                        if (inputText.isEmpty()) {
+                            log.info("submit via Enter key success");
+                            page.close();
+                            return WeiboPostResult.success();
+                        }
+                    } catch (Exception ignored) {}
+                    log.warn("Enter key submit failed");
+                    page.close();
+                    return WeiboPostResult.failed("Send button not found");
+                }
+
+                log.info("click send...");
+                sendBtn.click();
+                page.waitForTimeout(5000);
+
+                log.info("reply completed");
+                page.close();
+                return WeiboPostResult.success();
+            } catch (Exception e) {
+                log.error("reply execution failed", e);
+                return WeiboPostResult.failed("Reply failed: " + e.getMessage());
+            }
+        } catch (Exception e) {
+            log.error("topic reply failed", e);
+            return WeiboPostResult.failed("Reply failed: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Forward/repost a post in the topic
+     */
+    public WeiboPostResult forwardPost(PlatformAccount account, WeiboSuperTopic topic) {
+        return browserService.executeSerialized(() -> forwardPostSerialized(account, topic));
+    }
+
+    private WeiboPostResult forwardPostSerialized(PlatformAccount account, WeiboSuperTopic topic) {
+        try {
+            log.info("========== forward post ==========");
+            log.info("topicId={}, topicName={}", topic.getId(), topic.getTopicName());
+
+            Browser userBrowser = connectToUserChrome();
+            if (userBrowser == null) {
+                return WeiboPostResult.failed("Cannot connect to browser");
+            }
+
+            try {
+                List<BrowserContext> contexts = userBrowser.contexts();
+                if (contexts.isEmpty()) {
+                    return WeiboPostResult.failed("No browser pages open");
+                }
+
+                BrowserContext context = contexts.get(0);
+                Page page = context.newPage();
+
+                String url = topic.getTopicUrl();
+                log.info("open topic page: url={}", url);
+                page.navigate(url, new Page.NavigateOptions().setTimeout(60000));
+                page.waitForLoadState(LoadState.DOMCONTENTLOADED);
+                page.waitForTimeout(8000);
+
+                String pageContent = page.content();
+                log.info("page title: {}", page.title());
+
+                if (pageContent.contains("Sina Visitor System") || pageContent.contains("\u5fae\u535a\u767b\u5f55")) {
+                    log.warn("need login");
+                    page.close();
+                    return WeiboPostResult.failed("Need login");
+                }
+
+                // Find forward/repost button using dispatchEvent
+                log.info("find forward button...");
+                Locator forwardIcon = page.locator("i._retweetIcon_198pe_119, i[class*='woo-font--retweet']").first();
+                if (forwardIcon.count() > 0) {
+                    log.info("found forward icon, use dispatchEvent...");
+                    page.evaluate("() => {" +
+                        "  const icon = document.querySelector('i._retweetIcon_198pe_119, i[class*=\"woo-font--retweet\"]');" +
+                        "  if (icon) {" +
+                        "    const rect = icon.getBoundingClientRect();" +
+                        "    const x = rect.left + rect.width / 2;" +
+                        "    const y = rect.top + rect.height / 2;" +
+                        "    icon.dispatchEvent(new MouseEvent('mousedown', {bubbles: true, cancelable: true, clientX: x, clientY: y}));" +
+                        "    icon.dispatchEvent(new MouseEvent('mouseup', {bubbles: true, cancelable: true, clientX: x, clientY: y}));" +
+                        "    icon.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true, clientX: x, clientY: y}));" +
+                        "  }" +
+                        "}");
+                    page.waitForTimeout(5000);
+                    log.info("dispatchEvent done");
+                } else {
+                    log.warn("forward icon not found");
+                    page.close();
+                    return WeiboPostResult.failed("Forward button not found");
+                }
+
+                // Find forward/confirm button
+                log.info("find forward confirm button...");
+                Locator forwardBtn = null;
+                String[] forwardTexts = {"\u8f6c\u53d1", "\u786e\u5b9a", "\u53d1\u9001"};
+                for (String text : forwardTexts) {
+                    Locator btn = page.getByText(text, new Page.GetByTextOptions().setExact(true)).first();
+                    if (btn.count() > 0) {
+                        forwardBtn = btn;
+                        log.info("found forward button: text={}", text);
+                        break;
+                    }
+                }
+
+                if (forwardBtn == null || forwardBtn.count() == 0) {
+                    log.warn("forward confirm button not found, try Enter key...");
+                    page.keyboard().press("Enter");
+                    page.waitForTimeout(3000);
+                    log.info("forward completed (Enter key)");
+                    page.close();
+                    return WeiboPostResult.success();
+                }
+
+                log.info("click forward confirm...");
+                forwardBtn.click();
+                page.waitForTimeout(5000);
+
+                log.info("forward completed");
+                page.close();
+                return WeiboPostResult.success();
+            } catch (Exception e) {
+                log.error("forward execution failed", e);
+                return WeiboPostResult.failed("Forward failed: " + e.getMessage());
+            }
+        } catch (Exception e) {
+            log.error("topic forward failed", e);
+            return WeiboPostResult.failed("Forward failed: " + e.getMessage());
+        }
+    }
+
+    /**
+     * View/read posts in the topic (browse slowly)
+     */
+    public WeiboPostResult viewPosts(PlatformAccount account, WeiboSuperTopic topic, int count) {
+        return browserService.executeSerialized(() -> viewPostsSerialized(account, topic, count));
+    }
+
+    private WeiboPostResult viewPostsSerialized(PlatformAccount account, WeiboSuperTopic topic, int count) {
+        try {
+            log.info("========== view posts ==========");
+            log.info("topicId={}, topicName={}, count={}", topic.getId(), topic.getTopicName(), count);
+
+            Browser userBrowser = connectToUserChrome();
+            if (userBrowser == null) {
+                return WeiboPostResult.failed("Cannot connect to browser");
+            }
+
+            try {
+                List<BrowserContext> contexts = userBrowser.contexts();
+                if (contexts.isEmpty()) {
+                    return WeiboPostResult.failed("No browser pages open");
+                }
+
+                BrowserContext context = contexts.get(0);
+                Page page = context.newPage();
+
+                String url = topic.getTopicUrl();
+                log.info("open topic page: url={}", url);
+                page.navigate(url, new Page.NavigateOptions().setTimeout(60000));
+                page.waitForLoadState(LoadState.DOMCONTENTLOADED);
+                page.waitForTimeout(5000);
+
+                String pageContent = page.content();
+                log.info("page title: {}", page.title());
+
+                if (pageContent.contains("Sina Visitor System") || pageContent.contains("\u5fae\u535a\u767b\u5f55")) {
+                    log.warn("need login");
+                    page.close();
+                    return WeiboPostResult.failed("Need login");
+                }
+
+                // Find all post links
+                log.info("find posts...");
+                List<Locator> postLinks = page.locator("a[href*='/detail/'], a[class*='_time_']").all();
+                log.info("found {} posts", postLinks.size());
+
+                int viewed = 0;
+                for (int i = 0; i < Math.min(count, postLinks.size()); i++) {
+                    try {
+                        Locator post = postLinks.get(i);
+                        if (post.count() > 0) {
+                            String postText = post.innerText().trim();
+                            log.info("viewing post {}: {}", i + 1, postText.substring(0, Math.min(30, postText.length())));
+                            
+                            // Scroll to post
+                            post.scrollIntoViewIfNeeded();
+                            page.waitForTimeout(2000);
+                            
+                            // Click post to view detail
+                            post.click();
+                            page.waitForTimeout(5000);
+                            
+                            // Scroll slowly through the post
+                            for (int scroll = 0; scroll < 3; scroll++) {
+                                page.mouse().wheel(0, 300 + random.nextInt(200));
+                                waitRandom(2000, 4000);
+                            }
+                            
+                            // Go back
+                            page.goBack();
+                            page.waitForLoadState(LoadState.DOMCONTENTLOADED);
+                            page.waitForTimeout(3000);
+                            
+                            viewed++;
+                            log.info("viewed post {}", i + 1);
+                            
+                            // Wait between posts
+                            waitRandom(5000, 10000);
+                        }
+                    } catch (Exception e) {
+                        log.warn("failed to view post {}: {}", i + 1, e.getMessage());
+                    }
+                }
+
+                log.info("view completed, viewed {} posts", viewed);
+                page.close();
+                return WeiboPostResult.success();
+            } catch (Exception e) {
+                log.error("view execution failed", e);
+                return WeiboPostResult.failed("View failed: " + e.getMessage());
+            }
+        } catch (Exception e) {
+            log.error("topic view failed", e);
+            return WeiboPostResult.failed("View failed: " + e.getMessage());
+        }
     }
 
     public LoginCheckResult checkLogin(PlatformAccount account) {
-        try {
-            log.info("检查账号登录状态: accountId={}", account.getId());
-            Browser userBrowser = connectToUserChrome();
-            if (userBrowser != null) {
-                try {
-                    List<BrowserContext> contexts = userBrowser.contexts();
-                    if (!contexts.isEmpty()) {
-                        BrowserContext context = contexts.get(0);
-                        Page page = context.newPage();
-                        page.navigate("https://weibo.com", new Page.NavigateOptions().setTimeout(30000));
-                        page.waitForLoadState(LoadState.DOMCONTENTLOADED);
-                        page.waitForTimeout(3000);
+        return browserService.executeSerialized(() -> checkLoginSerialized(account));
+    }
 
-                        String content = page.content();
-                        if (!content.contains("Sina Visitor System") && !content.contains("微博登录")) {
-                            log.info("账号已登录");
-                            page.close();
-                            return LoginCheckResult.success();
-                        }
-                        page.close();
-                    }
-                } catch (Exception e) {
-                    log.error("检查失败", e);
-                }
+    private LoginCheckResult checkLoginSerialized(PlatformAccount account) {
+        BrowserContext context = null;
+        Page page = null;
+        try {
+            log.info("check account login status: accountId={}", account.getId());
+            context = browserService.loadWeiboContext(account);
+            if (context == null) {
+                return LoginCheckResult.failed("Cannot connect to browser");
             }
-            return LoginCheckResult.failed("未登录");
+
+            page = context.newPage();
+            page.navigate("https://weibo.com", new Page.NavigateOptions().setTimeout(30000));
+            page.waitForLoadState(LoadState.DOMCONTENTLOADED);
+            page.waitForTimeout(3000);
+
+            String content = page.content();
+            if (!requiresWeiboLogin(page, content)) {
+                log.info("account logged in");
+                return LoginCheckResult.success();
+            }
+            return LoginCheckResult.failed("Not logged in");
         } catch (Exception e) {
-            log.error("检查微博登录状态失败", e);
-            return LoginCheckResult.failed("检查失败: " + e.getMessage());
+            log.error("check login status failed", e);
+            return LoginCheckResult.failed("Check failed: " + e.getMessage());
+        } finally {
+            if (page != null) {
+                try { page.close(); } catch (Exception e) { log.debug("close login check page failed", e); }
+            }
+            if (context != null) {
+                try { context.close(); } catch (Exception e) { log.debug("close login check context failed", e); }
+            }
         }
     }
 }
